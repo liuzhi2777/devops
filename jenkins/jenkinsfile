@@ -1,0 +1,59 @@
+node {
+
+    def branch_name = env.BRANCH_NAME
+    def name_spaces = env.NS
+    def mvnHome = tool 'M3'
+
+    sh "echo branch name is $branch_name"
+    sh "echo name_spaces is $name_spaces"
+
+
+    stage('checkout') {
+        git branch: branch_name, credentialsId: env.GIT_SIGN, url: 'http://gitlab.top.mw/base/gateway.git'
+    }
+
+    stage('compile') {
+        sh "${mvnHome}/bin/mvn deploy --settings ${mvnHome}/conf/settings.xml -U"
+    }
+
+    stage('build image') {
+        sh '''
+        export harbor=harbor.top.mw
+        DOCKER_IMAGE=$harbor/library/$JOB_NAME:$BUILD_ID
+        docker build -t $DOCKER_IMAGE $WORKSPACE/.
+        '''
+    }
+
+    stage('push harbor') {
+        sh '''
+        export harbor=harbor.top.mw
+        export harbor_user=admin
+        export harbor_pwd=Harbor12345
+        docker login -u $harbor_user -p $harbor_pwd $harbor
+        DOCKER_IMAGE=$harbor/library/$JOB_NAME:$BUILD_ID
+        docker push $DOCKER_IMAGE
+        docker logout $harbor
+        docker rmi -f $DOCKER_IMAGE
+        '''
+     }
+
+    stage('deploy') {
+        sh '''
+        DOCKER_IMAGE=harbor.top.mw/library/$JOB_NAME:$BUILD_ID
+        sed -i "s|#NS|dev|g" $WORKSPACE/kubernetes.yml
+        sed -i "s|#IMAGE|${DOCKER_IMAGE}|g" $WORKSPACE/kubernetes.yml
+        sed -i "s|#NS|dev|g" $WORKSPACE/svc.yml
+
+        if kubectl get svc -n dev | grep $JOB_NAME; then
+            echo "has svc $JOB_NAME"
+        else
+            kubectl create -f $WORKSPACE/svc.yml
+        fi
+
+        kubectl apply -f $WORKSPACE/kubernetes.yml
+        '''
+     }
+
+
+
+}

@@ -1,0 +1,157 @@
+##
+# Description: kubernetes部署文件，不同项目只用修改 distribution 替换为项目名
+# @Date: 2019-04-23 16:14
+# @Author: jim
+##
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: base
+  namespace: #NS
+spec:
+  rules:
+  - host: base.top.mw
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: base
+          servicePort: 8080
+---
+kind: Service
+metadata:
+  name: base
+  namespace: #NS
+spec:
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+  selector:
+    app: base
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: base-filebeat-config
+data:
+  filebeat.yml: |-
+    filebeat.config:
+      inputs:
+        path: ${path.config}/inputs.d/*.yml
+        reload.enabled: false
+      modules:
+        path: ${path.config}/modules.d/*.yml
+        reload.enabled: false
+    setup.template:
+      name: "base"
+      pattern: "base-*"
+      overwrite: true
+    processors:
+      - add_cloud_metadata:
+    output.elasticsearch:
+      hosts: ['${ELASTICSEARCH_HOST:elasticsearch}:${ELASTICSEARCH_PORT:9200}']
+      index: "base-%{+yyyy.MM}"
+    setup.kibana:
+      host: "http://elk.top.mw"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: base-filebeat-inputs
+data:
+  log.yml: |-
+    - type: log
+      enabled: true
+      tail_files: true
+      paths:
+        - /logs/*.log
+      json.keys_under_root: true
+      json.overwrite_keys: true
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: base
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: base
+  template:
+    metadata:
+      labels:
+        app: base
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: 192.168.1.200
+      containers:
+        - name: base
+          imagePullPolicy: IfNotPresent
+          image: #IMAGE
+          resources:
+            requests:
+              memory: "2Gi"
+            limits:
+              memory: "2Gi"
+          livenessProbe:
+            failureThreshold: 8
+            httpGet:
+              path: /k8s/health
+              port: 8080
+              httpHeaders:
+                - name: X-Custom-Header
+                  value: jim
+            initialDelaySeconds: 60
+            timeoutSeconds: 3
+            periodSeconds: 5
+          ports:
+            - containerPort: 8080
+          env:
+            - name: JAVA_OPTS
+              value: "-XX:MetaspaceSize=128m -XX:MaxMetaspaceSize=128m -Xms1024m -Xmx1024m -Xmn256m -Xss256k -XX:SurvivorRatio=8 -XX:+UseConcMarkSweepGC -Duser.timezone=Asia/Shanghai"
+          volumeMounts:
+            - name: app-logs
+              mountPath: /logs
+          args:
+            - --spring.cloud.consul.host=consul.top.mw
+            - --spring.cloud.consul.port=80
+            - --spring.profiles.active=dev
+        - name: filebeat
+          image: docker.elastic.co/beats/filebeat:6.3.2
+          imagePullPolicy: IfNotPresent
+          args: [
+            "-c", "/etc/filebeat.yml",
+            "-e",
+          ]
+          env:
+            - name: ELASTICSEARCH_HOST
+              value: "elasticsearch"
+            - name: ELASTICSEARCH_PORT
+              value: "9200"
+          securityContext:
+            runAsUser: 0
+            privileged: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/filebeat.yml
+              readOnly: true
+              subPath: filebeat.yml
+            - name: inputs
+              mountPath: /usr/share/filebeat/inputs.d/
+              readOnly: true
+            - name: app-logs
+              mountPath: /logs
+      volumes:
+        - name: app-logs
+          emptyDir: {}
+        - name: config
+          configMap:
+            defaultMode: 0600
+            name: base-filebeat-config
+        - name: inputs
+          configMap:
+            defaultMode: 0600
+            name: base-filebeat-inputs
+
+
